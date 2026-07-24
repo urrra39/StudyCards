@@ -141,3 +141,36 @@ class TestRecordReview:
         assert repo.count_cards() == 0
         assert repo.count_reviews() == 0
         assert repo.list_reviews(card_id) == []
+
+
+class TestIngestionDedup:
+    """Cross-session import guard: was_ingested must survive a fresh repo
+    pointed at the same file, which the old session-only dict never did."""
+
+    def test_unseen_document_returns_none(self, repo):
+        assert repo.was_ingested("doc.pdf:abc123") is None
+
+    def test_recorded_document_is_remembered(self, repo):
+        repo.record_ingestion("doc.pdf:abc123", "doc.pdf", 7)
+        assert repo.was_ingested("doc.pdf:abc123") == 7
+
+    def test_dedup_persists_across_repo_instances(self, tmp_path):
+        path = tmp_path / "persist.db"
+        CardRepository(path).record_ingestion("f", "doc.pdf", 3)
+        # A brand new repo (== a new session/process) still sees it.
+        assert CardRepository(path).was_ingested("f") == 3
+
+    def test_reimport_overwrites_count_without_error(self, repo):
+        repo.record_ingestion("f", "doc.pdf", 3)
+        repo.record_ingestion("f", "doc.pdf", 5)  # forced 'extract again'
+        assert repo.was_ingested("f") == 5
+
+
+class TestDeleteCardReturnsBool:
+    def test_delete_existing_card_returns_true(self, repo):
+        cid = repo.add_card(_sample_card())
+        assert repo.delete_card(cid) is True
+        assert repo.get_card(cid) is None
+
+    def test_delete_missing_card_returns_false(self, repo):
+        assert repo.delete_card(999999) is False

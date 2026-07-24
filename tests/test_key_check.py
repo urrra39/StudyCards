@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from src.extraction.key_check import (
     INVALID_KEY_MESSAGE,
+    KeyCheck,
     check_api_key,
     detect_provider_from_key,
     interpret_listing,
@@ -246,3 +247,13 @@ class TestBalanceMessage:
             "INSUFFICIENT BALANCE OR BUY CREDITS FROM YOUR OPENAI"
         )
         assert insufficient_balance_message("Anthropic").endswith("ANTHROPIC")
+
+
+class TestOkStatus:
+    def test_valid_and_funded_are_ok(self):
+        assert KeyCheck(status="valid").ok
+        assert KeyCheck(status="funded").ok
+
+    def test_other_statuses_are_not_ok(self):
+        for status in ("empty", "placeholder", "mismatch", "invalid", "unreachable", "no_balance"):
+            assert not KeyCheck(status=status).ok, status

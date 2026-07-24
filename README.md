@@ -3,7 +3,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-0A1F1C?logo=python&logoColor=D4AF37)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-C5A059)](LICENSE)
 [![SM-2](https://img.shields.io/badge/scheduler-SM--2%20exact-D4AF37)](src/scheduler/sm2.py)
-[![Tests](https://img.shields.io/badge/tests-197%20passing-162825)](tests/)
+[![Tests](https://img.shields.io/badge/tests-216%20passing-162825)](tests/)
 
 **Document → concept-level flashcards → SM-2 spaced repetition**, with a
 measured evaluation against a fixed-interval baseline and an old-money

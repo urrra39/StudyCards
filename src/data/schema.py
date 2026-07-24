@@ -42,6 +42,17 @@ CREATE TABLE IF NOT EXISTS review_history (
     FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
 );
 
+-- Documents already imported, keyed by a content hash of the upload. This is
+-- what makes ingestion idempotent ACROSS sessions and restarts: the old
+-- in-memory guard forgot everything on a Streamlit rerun, so re-uploading the
+-- same PDF silently doubled the deck. ``fingerprint`` is name + sha256(bytes).
+CREATE TABLE IF NOT EXISTS ingested_documents (
+    fingerprint   TEXT    PRIMARY KEY,
+    filename      TEXT    NOT NULL,
+    card_count    INTEGER NOT NULL,
+    imported_at   TEXT    NOT NULL              -- ISO datetime
+);
+
 CREATE INDEX IF NOT EXISTS idx_cards_due_date ON cards(due_date);
 CREATE INDEX IF NOT EXISTS idx_history_card_id ON review_history(card_id);
 CREATE INDEX IF NOT EXISTS idx_history_reviewed_at ON review_history(reviewed_at);

@@ -109,9 +109,14 @@ class KeyCheck:
     message: str = ""
     detail: Optional[str] = None
 
+    # A key that authenticated is "ok" whether we only listed its models
+    # (valid) or also confirmed it has spendable balance (funded). Callers that
+    # need to distinguish the two still switch on ``status`` directly.
+    _OK_STATUSES = frozenset({"valid", "funded"})
+
     @property
     def ok(self) -> bool:
-        return self.status == "valid"
+        return self.status in self._OK_STATUSES
 
     @property
     def model_count(self) -> int:

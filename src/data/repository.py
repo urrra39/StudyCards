@@ -357,6 +357,48 @@ class CardRepository:
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM review_history").fetchone()[0])
 
-    def delete_card(self, card_id: int) -> None:
+    def delete_card(self, card_id: int) -> bool:
+        """Delete a card (and, via cascade, its history). Returns True if a row
+        was actually removed, so callers can tell a real delete from a no-op on
+        a stale id."""
         with self._connect() as conn:
-            conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+            cur = conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+            return cur.rowcount > 0
+
+    # -- Cross-session ingestion dedup ------------------------------------
+
+    def was_ingested(self, fingerprint: str) -> Optional[int]:
+        """Return the card count recorded for a previously imported document,
+        or None if this fingerprint has never been ingested. Survives restarts
+        because it is persisted, unlike the old session-only guard."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT card_count FROM ingested_documents WHERE fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
+        return int(row["card_count"]) if row is not None else None
+
+    def record_ingestion(
+        self,
+        fingerprint: str,
+        filename: str,
+        card_count: int,
+        *,
+        now: Optional[datetime] = None,
+    ) -> None:
+        """Remember that a document was imported. Idempotent: a repeat import
+        (the user forced 'extract again') overwrites the stored count rather
+        than raising on the primary key."""
+        stamp = (now or datetime.now()).isoformat(timespec="seconds")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO ingested_documents (fingerprint, filename, card_count, imported_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    filename = excluded.filename,
+                    card_count = excluded.card_count,
+                    imported_at = excluded.imported_at
+                """,
+                (fingerprint, filename, card_count, stamp),
+            )

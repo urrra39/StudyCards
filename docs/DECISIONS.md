@@ -601,3 +601,88 @@ module compiles; balancing runs its local guards (empty / placeholder /
 wrong-provider) before spending a token; billing, auth, and transport failures
 remain three disjoint verdicts; and no verification path can raise. Suite at 197
 passing, 2 Streamlit skips offline.
+
+## Phase 16 - Closing a static-review pass (real defects)
+
+An external static/XSS/regex review surfaced concrete defects; all P1/P2 and
+the actionable P3s are fixed here.
+
+- **[P1] Library XSS.** The deck view printed the LLM-derived `concept` through
+  an `unsafe_allow_html=True` markdown call without escaping - the exact sink
+  `card_html()` was hardened against, missed at this second call site. Now
+  `html.escape(card.concept)`. (Same treatment left the entity separators
+  intact.)
+- **[P2] Retired-model regex.** `claude-(sonnet|opus)-4-(0|1)?$` demanded a
+  hyphen after `-4`, so bare `claude-sonnet-4` / `claude-opus-4` were NOT
+  flagged retired and produced opaque 404s. Now `-4(?:-[01])?$`: the 4.0/4.1
+  revisions and the bare families match, while current `-4-6/-4-7/-4-8` do not.
+- **[P2] Secret in the cache key.** `_cached_models(provider, fingerprint,
+  api_key)` let Streamlit hash the raw key into the cache identifier, making
+  the fingerprint redundant and the secret persistable. Renamed the param to
+  `_api_key`; Streamlit skips underscore-prefixed args, so only
+  `(provider, fingerprint)` vary the entry and the key never enters the cache.
+- **[P2] STUDYCARDS_PROVIDER / STUDYCARDS_MODEL ignored.** `.env` promised
+  these; only the DB path was read. The sidebar now preselects the provider
+  and (when the key can reach it) the model from those vars, matching the docs.
+- **[P2] Stale key verdict.** The verdict was only discarded on a provider
+  change, so pasting a different key under the SAME provider left a misleading
+  "funded" banner. We now remember `(provider, fingerprint)` at check time and
+  drop the verdict the moment either changes.
+- **[P2] Bill-shock guardrail.** Ingestion is one model call per chunk with no
+  ceiling. The UI now estimates chunk count (via the real chunker) and, above a
+  soft limit of 40, requires an explicit confirmation before spending.
+- **[P2] Cross-session dedup.** The duplicate guard lived in `st.session_state`
+  and forgot everything on a rerun, so re-uploading doubled the deck. Added a
+  persisted `ingested_documents` table (content-hash key) with
+  `was_ingested`/`record_ingestion`; dedup now survives reruns and restarts.
+- **[P3] delete_card** returns bool (row actually removed) and finally has a UI
+  ("Delete card" in the Library, history dropped via cascade).
+- **[P3] Dead `_clear_review_feedback`** is now called when the next card's
+  answer is revealed, so a prior card's rating feedback cannot mislabel it.
+- **[P3] KeyCheck.ok** now counts both `valid` and `funded` (callers still
+  switch on `status` for the finer distinction).
+
+### Documented limitations (not defects, called out for honesty)
+- Dedup's Jaccard filter uses English stopwords, so near-duplicate detection is
+  weaker for Uzbek/Russian source text. Exact-duplicate and cross-document
+  dedup are unaffected; multilingual stopwording is future work.
+- `CREATE TABLE IF NOT EXISTS` covers additive schema growth (like this
+  phase's new table), but there is no column-level migration engine yet; a
+  future breaking column change would need one.
+- The evaluation compares SM-2 against a fixed-interval baseline under a
+  synthetic forgetting model. It measures scheduling behaviour against a
+  model, not real human retention - a methodological ceiling, not a bug.
+
+Suite at 209 passing, 2 Streamlit-only skips offline.
+
+## Phase 17 - Streamlit button+checkbox P1 fix + fingerprint P3
+
+**[P1] Large-document extraction never ran.**
+`st.button` returns True only on the single rerun triggered by the click.
+When the soft-limit checkbox appeared (>40 chunks) and the user ticked it,
+Streamlit fired a fresh rerun - where the button was False again, so the
+`if not st.button(...): return` guard exited immediately and extraction
+never started. The guardrail intended to *protect* large-doc users was the
+exact mechanism that silently blocked them.
+
+Fix: a two-key session-state handshake.
+- `pending_extract` is set to the document fingerprint the moment the button
+  is clicked; it persists across every subsequent rerun until extraction
+  finishes or the user removes the file.
+- `extract_confirmed` is set to True when the user ticks the checkbox; it
+  also persists, so the extraction step can read it on the rerun that
+  actually runs the model calls (the checkbox rerun itself).
+- Extraction fires on the first rerun where `pending_extract == fingerprint`
+  AND (n_chunks <= CHUNK_SOFT_LIMIT OR `extract_confirmed`). Both keys are
+  popped in the `finally` block so a re-upload starts clean.
+- Error paths (corrupt file, empty text) also pop `pending_extract` so the
+  user is not stuck in a pending state after a failure.
+
+**[P3] Fingerprint included the filename.**
+The same PDF uploaded under a different name was treated as a new document
+and re-imported, doubling the deck. The fingerprint now uses the full
+sha256 of the file *content only* (64 hex chars, up from the truncated 32).
+Collision probability is negligible; any two files with identical bytes are
+the same document regardless of what they are called.
+
+Suite at 216 passing, 2 Streamlit-only skips offline.

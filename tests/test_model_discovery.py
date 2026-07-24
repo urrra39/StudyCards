@@ -160,3 +160,25 @@ class TestDiscoverModels:
 
         with pytest.raises(ValueError, match="Unknown provider"):
             discover_models("cohere", "key")
+
+
+class TestRetiredClaude4Regex:
+    """Regression: the retired matcher used to require a suffix after '-4', so
+    bare 'claude-sonnet-4'/'claude-opus-4' slipped through and users got opaque
+    404s instead of the sidebar retirement warning."""
+
+    def test_bare_claude_4_families_are_retired(self):
+        assert is_retired_model("claude-sonnet-4")
+        assert is_retired_model("claude-opus-4")
+
+    def test_claude_4_0_and_4_1_revisions_are_retired(self):
+        assert is_retired_model("claude-opus-4-0")
+        assert is_retired_model("claude-opus-4-1")
+
+    def test_current_claude_4_minor_versions_are_not_retired(self):
+        for model in ("claude-sonnet-4-6", "claude-opus-4-7", "claude-opus-4-8"):
+            assert not is_retired_model(model), model
+
+    def test_current_flagships_are_not_retired(self):
+        for model in ("claude-sonnet-5", "claude-opus-5", "claude-fable-5"):
+            assert not is_retired_model(model), model

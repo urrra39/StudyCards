@@ -62,14 +62,19 @@ DEFAULT_OPENAI_MODELS: List[str] = [
 # letting the user discover it as an opaque provider error.
 _RETIRED_MODEL_PATTERN = re.compile(
     r"""^(
-        claude-(1|2|instant|3)          # Claude 1/2/3 families
-        | claude-(sonnet|opus)-4-(0|1)?$  # Sonnet 4 / Opus 4 / Opus 4.1
+        claude-(1|2|instant|3)              # Claude 1/2/3 families
+        | claude-(sonnet|opus)-4(?:-[01])?$  # Sonnet 4, Opus 4, Opus 4.0/4.1
         | gpt-3(?!\.5-turbo)
         | text-davinci
         | code-davinci
     )""",
     re.IGNORECASE | re.VERBOSE,
 )
+# Note on the Claude-4 branch: the trailing ``$`` binds only to that alternative
+# (each alternative is anchored on its own), so ``claude-sonnet-4`` and
+# ``claude-opus-4`` match, as do ``-4-0``/``-4-1``. Current models keep their
+# minor suffix (``claude-sonnet-4-6``, ``claude-opus-4-7/4-8``) and are NOT
+# matched because ``-[01]`` only admits the retired 4.0/4.1 revisions.
 
 
 def is_retired_model(model_id: str) -> bool:
