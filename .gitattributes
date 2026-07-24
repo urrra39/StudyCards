@@ -1,0 +1,9 @@
+# Normalize all text files to LF in the repository and on checkout,
+# so the codebase behaves identically on Windows and Linux (CI, Streamlit Cloud).
+* text=auto eol=lf
+
+# Binary formats — never touch line endings
+*.pdf binary
+*.png binary
+*.jpg binary
+*.db binary
