@@ -1,5 +1,6 @@
 # Pinned to ranges compatible with Python 3.9 (dev machine interpreter).
 anthropic>=0.40,<1.0
+openai>=1.0.0,<2.0
 pypdf>=5.0,<6.0
 streamlit>=1.38,<1.45      # 1.45+ drops Python 3.9 support
 numpy>=1.26,<2.1
