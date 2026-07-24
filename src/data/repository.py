@@ -1,18 +1,25 @@
 """SQLite persistence: cards + review history as the source of truth."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterator, List, Optional, Union
+from typing import Dict, Iterator, List, Optional, Sequence, Union
 
 from src.data.schema import SCHEMA_SQL
 from src.extraction.schema import Flashcard
 from src.scheduler.sm2 import CardState, review
 
 PathLike = Union[str, Path]
+
+logger = logging.getLogger(__name__)
+
+# Streamlit reruns can overlap briefly; without a busy timeout SQLite raises
+# "database is locked" immediately instead of waiting for the writer to finish.
+BUSY_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -98,7 +105,13 @@ def _review_from_row(row: sqlite3.Row) -> StoredReview:
 
 
 class CardRepository:
-    """Thin SQLite repository. One connection per operation (safe for Streamlit)."""
+    """Thin SQLite repository. One connection per operation (safe for Streamlit).
+
+    Concurrency notes:
+    * WAL journaling lets the Streamlit UI read while a write is in flight.
+    * A busy timeout makes concurrent writers wait instead of failing fast,
+      which is what overlapping Streamlit reruns actually need.
+    """
 
     def __init__(self, db_path: PathLike):
         self.db_path = Path(db_path)
@@ -107,7 +120,7 @@ class CardRepository:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), timeout=BUSY_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         try:
@@ -123,6 +136,14 @@ class CardRepository:
         """Create tables/indexes if they do not already exist."""
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            # WAL is a persistent database property; setting it once is enough,
+            # but it is cheap and idempotent so we assert it on every init.
+            # In-memory databases do not support WAL, hence the guard.
+            if str(self.db_path) != ":memory:":
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                except sqlite3.DatabaseError:  # pragma: no cover - platform dependent
+                    logger.debug("WAL unavailable for %s; using default journal", self.db_path)
 
     def add_card(
         self,
@@ -132,32 +153,52 @@ class CardRepository:
         now: Optional[datetime] = None,
     ) -> int:
         """Insert one card with default SM-2 state. Returns the new row id."""
+        return self.add_cards([card], due_date=due_date, now=now)[0]
+
+    def add_cards(
+        self,
+        cards: Sequence[Flashcard],
+        *,
+        due_date: Optional[date] = None,
+        now: Optional[datetime] = None,
+    ) -> List[int]:
+        """Bulk-insert cards in ONE transaction; returns ids in the same order.
+
+        Previously this opened a fresh connection per card, so importing a
+        60-card document meant 60 connect/commit/fsync cycles. A single
+        transaction turns that into one.
+        """
+        if not cards:
+            return []
+
         when = now or datetime.now()
         due = due_date or when.date()
-        with self._connect() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO cards (
-                    question, answer, concept, source_chunk,
-                    ease_factor, repetitions, interval_days, due_date,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 2.5, 0, 0, ?, ?, ?)
-                """,
-                (
-                    card.question,
-                    card.answer,
-                    card.concept,
-                    card.source_chunk,
-                    due.isoformat(),
-                    when.isoformat(timespec="seconds"),
-                    when.isoformat(timespec="seconds"),
-                ),
-            )
-            return int(cur.lastrowid)
+        stamp = when.isoformat(timespec="seconds")
+        due_iso = due.isoformat()
 
-    def add_cards(self, cards: List[Flashcard], *, now: Optional[datetime] = None) -> List[int]:
-        """Bulk-insert cards; returns ids in the same order."""
-        return [self.add_card(c, now=now) for c in cards]
+        ids: List[int] = []
+        with self._connect() as conn:
+            for card in cards:
+                cur = conn.execute(
+                    """
+                    INSERT INTO cards (
+                        question, answer, concept, source_chunk,
+                        ease_factor, repetitions, interval_days, due_date,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 2.5, 0, 0, ?, ?, ?)
+                    """,
+                    (
+                        card.question,
+                        card.answer,
+                        card.concept,
+                        card.source_chunk,
+                        due_iso,
+                        stamp,
+                        stamp,
+                    ),
+                )
+                ids.append(int(cur.lastrowid))
+        return ids
 
     def get_card(self, card_id: int) -> Optional[StoredCard]:
         with self._connect() as conn:
@@ -194,10 +235,13 @@ class CardRepository:
         """Apply SM-2, update the card, and append an immutable history row.
 
         Card state and history are written in a single transaction so a crash
-        mid-review cannot leave them inconsistent.
+        mid-review cannot leave them inconsistent. The returned StoredReview is
+        built from the values we just wrote rather than re-read afterwards, so
+        the result cannot be affected by a concurrent writer.
         """
         when = now or datetime.now()
         day = review_date or when.date()
+        reviewed_at = when.isoformat(timespec="seconds")
 
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
@@ -205,6 +249,7 @@ class CardRepository:
                 raise KeyError(f"card id {card_id} not found")
 
             stored = _card_from_row(row)
+            # Raises ValueError on an out-of-range quality BEFORE any write.
             result = review(stored.to_card_state(), quality, review_date=day)
             new = result.state
 
@@ -223,7 +268,7 @@ class CardRepository:
                     new.repetitions,
                     new.interval_days,
                     new.due_date.isoformat() if new.due_date else None,
-                    when.isoformat(timespec="seconds"),
+                    reviewed_at,
                     card_id,
                 ),
             )
@@ -247,14 +292,24 @@ class CardRepository:
                     result.previous_repetitions,
                     new.repetitions,
                     result.explanation,
-                    when.isoformat(timespec="seconds"),
+                    reviewed_at,
                 ),
             )
             history_id = int(cur.lastrowid)
 
-        stored_review = self.get_review(history_id)
-        assert stored_review is not None
-        return stored_review
+        return StoredReview(
+            id=history_id,
+            card_id=card_id,
+            quality=quality,
+            ease_factor_before=result.previous_ease_factor,
+            ease_factor_after=new.ease_factor,
+            interval_before=result.previous_interval_days,
+            interval_after=new.interval_days,
+            repetitions_before=result.previous_repetitions,
+            repetitions_after=new.repetitions,
+            explanation=result.explanation,
+            reviewed_at=_parse_datetime(reviewed_at),
+        )
 
     def get_review(self, review_id: int) -> Optional[StoredReview]:
         with self._connect() as conn:
@@ -274,6 +329,25 @@ class CardRepository:
                 (card_id,),
             ).fetchall()
         return [_review_from_row(r) for r in rows]
+
+    def latest_reviews(self) -> Dict[int, StoredReview]:
+        """Most recent review per card, in one query.
+
+        The deck view previously issued one ``list_reviews`` call per card
+        (a classic N+1) just to show each card's last explanation.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT h.* FROM review_history h
+                JOIN (
+                    SELECT card_id, MAX(id) AS max_id
+                    FROM review_history
+                    GROUP BY card_id
+                ) latest ON latest.max_id = h.id
+                """
+            ).fetchall()
+        return {int(r["card_id"]): _review_from_row(r) for r in rows}
 
     def count_cards(self) -> int:
         with self._connect() as conn:

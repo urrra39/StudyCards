@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -71,10 +71,32 @@ class MemoryModel:
     fail_factor: float = 0.6  # multiplicative shrink on fail
     min_stability: float = 0.8
     max_stability: float = 365.0
+    _by_id: Dict[int, MemoryCard] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        self._reindex()
+
+    def _reindex(self) -> None:
+        self._by_id = {c.card_id: c for c in self.cards}
+
+    def get(self, card_id: int) -> MemoryCard:
+        """Look up a card by its id.
+
+        Previously this was ``self.cards[card_id]`` -- a positional index
+        masquerading as an id lookup. It happened to work only because
+        make_population assigns ids 0..n-1 in order; any other population
+        would have silently updated the wrong card.
+        """
+        if card_id not in self._by_id:
+            self._reindex()
+        try:
+            return self._by_id[card_id]
+        except KeyError:
+            raise KeyError(f"unknown card_id {card_id}") from None
 
     def apply_review(self, card_id: int, day: int, quality: int) -> float:
         """Update stability from a review; returns R at the moment of review."""
-        card = self.cards[card_id]
+        card = self.get(card_id)
         r = card.retrievability_on(day)
         if quality >= 3:
             # Base reinforcement even at R≈1 (otherwise the first review after
@@ -94,7 +116,7 @@ class MemoryModel:
 def make_population(
     n_cards: int,
     initial_stability: float = 5.0,
-    rng: np.random.Generator = None,
+    rng: Optional[np.random.Generator] = None,
     stability_jitter: float = 0.25,
 ) -> MemoryModel:
     """Create ``n_cards`` with mildly heterogeneous initial stabilities."""

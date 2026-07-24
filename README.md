@@ -3,7 +3,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-0A1F1C?logo=python&logoColor=D4AF37)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-C5A059)](LICENSE)
 [![SM-2](https://img.shields.io/badge/scheduler-SM--2%20exact-D4AF37)](src/scheduler/sm2.py)
-[![Tests](https://img.shields.io/badge/tests-106%20passing-162825)](tests/)
+[![Tests](https://img.shields.io/badge/tests-197%20passing-162825)](tests/)
 
 **Document → concept-level flashcards → SM-2 spaced repetition**, with a
 measured evaluation against a fixed-interval baseline and an old-money
@@ -21,7 +21,14 @@ an explanation of *why* the next interval was chosen.
 - **Extraction pipeline** — paragraph-aware chunking, Anthropic or OpenAI,
   Jaccard dedup + quality filters (no LangChain)
 - **Dynamic model discovery** — live model lists from your API key, with
-  curated fallbacks if offline
+  the full curated 2026 catalog (Claude Sonnet 5, Opus 5, Fable 5, Opus 4.8,
+  Opus 4.7, Sonnet 4.6; GPT-5.6 Sol / Terra / Luna, GPT-5.5, 5.5 Pro, 5.4,
+  5.4 Pro / mini / nano) and an explicit warning if a pinned model has been
+  retired by the provider
+- **Old-money interface** — Playfair Display and Cormorant Garamond over deep
+  emerald, brass hairline rules, a gilded double-framed review card and a
+  monogram masthead; full local serif fallbacks, restyled focus rings,
+  `prefers-reduced-motion` support and print styles
 - **Evaluation** — synthetic forgetting curves; SM-2 uses **74.8% fewer
   reviews** than a 3-day fixed baseline while holding higher mean
   retrievability ([full numbers](docs/EVALUATION_RESULTS.md))

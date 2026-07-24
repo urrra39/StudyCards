@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studycards"
+version = "1.0.0"
+description = "Document to concept-level flashcards with exact SM-2 spaced repetition"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = ["flashcards", "spaced-repetition", "sm-2", "llm", "streamlit"]
+dependencies = [
+    "anthropic>=0.40,<1.0",
+    "openai>=1.0.0,<2.0",
+    "pypdf>=5.0,<6.0",
+    "streamlit>=1.38,<1.45",
+    "numpy>=1.26,<2.1",
+    "python-dotenv>=1.0,<2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0,<9.0"]
+
+[project.scripts]
+studycards-eval = "src.evaluation.run_eval:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+# pythonpath removes the need for the sys.path shim in tests/conftest.py
+# (the shim is kept for people invoking pytest from an odd working directory).
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:src.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM"]

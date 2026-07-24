@@ -26,10 +26,13 @@ both satisfy it).
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Callable, List, Optional
 
 from src.extraction.schema import Flashcard
+
+logger = logging.getLogger(__name__)
 
 # str prompt in, str completion out. Both provider adapters satisfy this.
 CompletionFn = Callable[[str], str]
@@ -79,8 +82,16 @@ def parse_cards_response(raw: str, source_chunk: Optional[int] = None) -> List[F
     ExtractionParseError so the caller can decide to retry or skip the chunk.
     """
     text = raw.strip()
-    # Strip ```json ... ``` fences if the model added them despite instructions.
-    text = re.sub(r"^```(?:json)?\s*|```\s*$", "", text, flags=re.MULTILINE).strip()
+    # Strip a wrapping ```json ... ``` fence if the model added one despite
+    # instructions. Anchored to the whole string (not MULTILINE) so a fenced
+    # code block *inside* an answer is left untouched -- the previous
+    # MULTILINE pattern silently mangled those payloads.
+    text = re.sub(
+        r"\A```[a-zA-Z0-9_+-]*[ \t]*\r?\n(.*?)\r?\n?```\Z",
+        r"\1",
+        text,
+        flags=re.DOTALL,
+    ).strip()
     # If prose surrounds the array, isolate the outermost [...] span.
     if not text.startswith("["):
         start, end = text.find("["), text.rfind("]")
@@ -120,12 +131,27 @@ def extract_cards_from_chunk(
     complete: CompletionFn,
     max_cards: int = MAX_CARDS_PER_CHUNK,
 ) -> List[Flashcard]:
-    """Run extraction for one chunk. Parse errors return [] (skip the chunk)
-    instead of failing the whole document — one bad completion should not
-    cost the user the other 40 chunks."""
+    """Run extraction for one chunk, returning [] instead of raising.
+
+    A single bad chunk must never cost the user the other 40. Two distinct
+    failure modes are contained here:
+
+    * **Parse failure** -- the model returned prose or broken JSON.
+    * **Provider failure** -- a transport/API error (rate limit, timeout,
+      transient 5xx). Previously this propagated and aborted the whole
+      document, discarding every card already extracted.
+
+    Both are logged at WARNING with the chunk index so failures are
+    diagnosable rather than silent.
+    """
     prompt = build_extraction_prompt(chunk_text, max_cards=max_cards)
-    raw = complete(prompt)
+    try:
+        raw = complete(prompt)
+    except Exception as exc:  # noqa: BLE001 - provider SDKs raise many types
+        logger.warning("chunk %s: provider call failed (%s); skipping", chunk_index, exc)
+        return []
     try:
         return parse_cards_response(raw, source_chunk=chunk_index)
-    except ExtractionParseError:
+    except ExtractionParseError as exc:
+        logger.warning("chunk %s: unparseable completion (%s); skipping", chunk_index, exc)
         return []

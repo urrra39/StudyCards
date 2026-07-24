@@ -105,12 +105,21 @@ def _split_paragraphs(text: str, max_chars: int) -> List[str]:
             # Prefer breaking at the last sentence end inside the budget;
             # fall back to a raw cut only if there is none.
             window = para[:max_chars]
-            match = None
-            for match in re.finditer(r"[.!?]\s", window):
-                pass
-            cut = match.end() if match else max_chars
-            paragraphs.append(para[:cut].strip())
-            para = para[cut:].strip()
+            matches = list(re.finditer(r"[.!?]\s", window))
+            cut = matches[-1].end() if matches else max_chars
+            head = para[:cut].strip()
+            if head:
+                paragraphs.append(head)
+            remainder = para[cut:].strip()
+            # Guard against a non-advancing cut. If the sentence-boundary cut
+            # produced no forward progress (all-whitespace head), fall back to
+            # a hard cut so the loop cannot spin forever on pathological input.
+            if len(remainder) >= len(para):
+                head = para[:max_chars].strip()
+                if head:
+                    paragraphs.append(head)
+                remainder = para[max_chars:].strip()
+            para = remainder
         if para:
             paragraphs.append(para)
     return paragraphs

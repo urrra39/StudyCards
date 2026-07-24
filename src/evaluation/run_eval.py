@@ -21,12 +21,24 @@ DEFAULTS = dict(
 )
 
 
+def _safe_ratio(numerator: float, denominator: float, default: float = 0.0) -> float:
+    """Divide, returning ``default`` when the denominator is zero.
+
+    A degenerate scenario (``n_cards=0``, ``horizon_days=0``, or a baseline
+    that never schedules a review) previously crashed the whole report with
+    ZeroDivisionError instead of rendering zeros.
+    """
+    if not denominator:
+        return default
+    return numerator / denominator
+
+
 def render_markdown(results: dict, params: dict) -> str:
     sm2 = results["sm2"]
     fixed = results["fixed"]
-    review_reduction = 1.0 - (sm2.total_reviews / fixed.total_reviews)
-    sm2_eff = sm2.fraction_days_above_threshold / sm2.reviews_per_card
-    fixed_eff = fixed.fraction_days_above_threshold / fixed.reviews_per_card
+    review_reduction = 1.0 - _safe_ratio(sm2.total_reviews, fixed.total_reviews, 1.0)
+    sm2_eff = _safe_ratio(sm2.fraction_days_above_threshold, sm2.reviews_per_card)
+    fixed_eff = _safe_ratio(fixed.fraction_days_above_threshold, fixed.reviews_per_card)
 
     def win(a: float, b: float) -> str:
         return "SM-2" if a >= b else "Fixed"
@@ -83,6 +95,7 @@ python -m src.evaluation.run_eval
 def main() -> None:
     params = dict(DEFAULTS)
     results = compare_schedulers(**params)
+    OUT_MD.parent.mkdir(parents=True, exist_ok=True)
     OUT_MD.write_text(render_markdown(results, params), encoding="utf-8")
     payload = {
         "params": params,
