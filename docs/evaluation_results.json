@@ -1,0 +1,35 @@
+{
+  "params": {
+    "n_cards": 50,
+    "horizon_days": 180,
+    "threshold": 0.85,
+    "fixed_interval_days": 3,
+    "seed": 42
+  },
+  "results": {
+    "sm2": {
+      "scheduler": "SM-2",
+      "horizon_days": 180,
+      "n_cards": 50,
+      "threshold": 0.85,
+      "total_reviews": 755,
+      "reviews_per_card": 15.1,
+      "mean_retrievability": 0.8821,
+      "median_retrievability": 0.8992,
+      "fraction_days_above_threshold": 0.693,
+      "mean_r_at_review": 0.8371
+    },
+    "fixed": {
+      "scheduler": "Fixed-3d",
+      "horizon_days": 180,
+      "n_cards": 50,
+      "threshold": 0.85,
+      "total_reviews": 3000,
+      "reviews_per_card": 60.0,
+      "mean_retrievability": 0.4765,
+      "median_retrievability": 0.2865,
+      "fraction_days_above_threshold": 0.3802,
+      "mean_r_at_review": 0.4124
+    }
+  }
+}
