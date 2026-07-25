@@ -174,3 +174,43 @@ class TestDeleteCardReturnsBool:
 
     def test_delete_missing_card_returns_false(self, repo):
         assert repo.delete_card(999999) is False
+
+
+class TestUpdateCard:
+    def test_update_changes_content(self, repo: CardRepository):
+        card_id = repo.add_card(_sample_card())
+        assert repo.update_card(card_id, question="An edited question, long enough?") is True
+        stored = repo.get_card(card_id)
+        assert stored.question == "An edited question, long enough?"
+
+    def test_update_only_provided_fields(self, repo: CardRepository):
+        card_id = repo.add_card(_sample_card())
+        original = repo.get_card(card_id)
+        repo.update_card(card_id, concept="New concept")
+        stored = repo.get_card(card_id)
+        assert stored.concept == "New concept"
+        # untouched fields preserved
+        assert stored.question == original.question
+        assert stored.answer == original.answer
+
+    def test_update_missing_id_returns_false(self, repo: CardRepository):
+        assert repo.update_card(999999, question="Nobody home here, right?") is False
+
+    def test_update_no_fields_is_noop(self, repo: CardRepository):
+        card_id = repo.add_card(_sample_card())
+        assert repo.update_card(card_id) is False
+
+    def test_update_does_not_reset_sm2_state(self, repo: CardRepository):
+        card_id = repo.add_card(_sample_card(), now=datetime(2026, 1, 1, 12, 0, 0))
+        # Advance the schedule so EF/reps/interval/due are non-default.
+        repo.record_review(card_id, 5, review_date=date(2026, 1, 1))
+        repo.record_review(card_id, 4, review_date=date(2026, 1, 2))
+        before = repo.get_card(card_id)
+        assert before.repetitions >= 2  # sanity: schedule advanced
+
+        repo.update_card(card_id, question="Typo fixed but schedule intact?")
+        after = repo.get_card(card_id)
+        assert after.ease_factor == before.ease_factor
+        assert after.repetitions == before.repetitions
+        assert after.interval_days == before.interval_days
+        assert after.due_date == before.due_date

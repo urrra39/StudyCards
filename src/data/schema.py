@@ -57,3 +57,11 @@ CREATE INDEX IF NOT EXISTS idx_cards_due_date ON cards(due_date);
 CREATE INDEX IF NOT EXISTS idx_history_card_id ON review_history(card_id);
 CREATE INDEX IF NOT EXISTS idx_history_reviewed_at ON review_history(reviewed_at);
 """
+
+# Current schema version. Fresh databases are created directly from SCHEMA_SQL
+# (which is always the latest shape) and then stamped at this version by the
+# migrator; older databases are upgraded step by step until they reach it.
+# Bump this whenever a new entry is added to MIGRATIONS in migrate.py.
+#   v1 - base schema: cards + review_history + indexes
+#   v2 - ingested_documents (cross-session ingest dedup)
+SCHEMA_VERSION = 2

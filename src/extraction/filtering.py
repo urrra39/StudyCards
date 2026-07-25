@@ -11,10 +11,18 @@ overlap region) with zero extra dependencies and completely explainable
 behavior. Threshold 0.6 was chosen because true duplicates from overlap
 regions share most content words, while distinct concepts from the same
 passage rarely exceed ~0.4.
+
+Language handling: tokenization is Unicode-aware and language-agnostic, so
+content words in Uzbek, Russian, or any script are compared on equal footing
+with English. Stopword removal is a *refinement* on top of that, not the
+foundation - similarity still works for a language whose function words we do
+not list. We keep a small, high-confidence multilingual (en + ru + uz) stopword
+set; anything not in it simply counts as a content word.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import FrozenSet, List
 
 from src.extraction.schema import Flashcard
@@ -24,18 +32,47 @@ MIN_QUESTION_CHARS = 12
 MIN_ANSWER_CHARS = 3
 MAX_ANSWER_CHARS = 800
 
-# Common English stopwords: excluded from Jaccard so similarity reflects
-# content words. "What is the" matching "What is a" must not count as overlap.
+# High-confidence function words across the three languages this tool is used
+# with. Removing them sharpens similarity ("what is the" vs "what is a" must not
+# read as overlap), but similarity does NOT depend on this list being complete:
+# any unlisted word is treated as content, so an unsupported language still
+# deduplicates correctly, just slightly less aggressively.
 _STOPWORDS = frozenset(
-    "a an the is are was were be been do does did what which who whom how why when "
-    "where of in on at to for from with by and or not it its this that these those "
-    "can could would should".split()
+    (
+        # English
+        "a an the is are was were be been do does did what which who whom how why "
+        "when where of in on at to for from with by and or not it its this that "
+        "these those can could would should "
+        # Russian (Cyrillic; casefolded forms)
+        "и в во не что он на я с со как а то все она так его но да ты к у же вы за "
+        "бы по ее мне это "
+        # Uzbek (Latin)
+        "va bilan uchun bu shu u men sen biz ular bir har ham emas yoki agar nima "
+        "qanday"
+    ).split()
 )
+
+# Letters/digits in ANY script (``\w`` minus underscore), allowing internal
+# apostrophes so English contractions and Uzbek's Latin apostrophe letters
+# (o', g') stay as one token. Applied after normalization.
+_TOKEN_RE = re.compile(r"[^\W_]+(?:['\u2019\u02bb][^\W_]+)*", re.UNICODE)
+
+
+def _normalize(text: str) -> str:
+    """Unicode-aware fold for cross-language comparison.
+
+    NFKD-decompose then drop combining marks so accented / diacritic variants
+    compare equal, and ``casefold`` for script-aware lowercasing (handles
+    Cyrillic and more, which ``str.lower`` on ASCII assumptions would miss).
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return stripped.casefold()
 
 
 def _content_tokens(text: str) -> FrozenSet[str]:
-    """Lowercased content-word token set for similarity comparison."""
-    tokens = re.findall(r"[a-z0-9']+", text.lower())
+    """Language-agnostic content-word token set for similarity comparison."""
+    tokens = _TOKEN_RE.findall(_normalize(text))
     return frozenset(t for t in tokens if t not in _STOPWORDS)
 
 
@@ -63,12 +100,58 @@ def passes_quality(card: Flashcard) -> bool:
         return False
     if question_similarity(q, a) >= 0.9 and _content_tokens(q) == _content_tokens(a):
         return False
-    deixis = re.search(
-        r"\b(according to the (text|passage|document|author)|in this (section|chapter|text|passage))\b",
-        q,
-        flags=re.IGNORECASE,
-    )
-    return deixis is None
+    return not _has_document_deixis(q)
+
+
+# Optional Uzbek Latin apostrophe (o'/g') in deixis phrases: plain ', curly ',
+# or the modifier letter turned comma. Kept tolerant so "bo'limda" matches
+# however the apostrophe was typed.
+_UZ_APOS = r"['\u2019\u02bb`]?"
+
+# Document-deixis phrases: a question that only makes sense while looking at the
+# source ("according to the text") is useless as a standalone flashcard. These
+# are deliberately WHOLE PHRASES, never bare words like "text"/"текст"/"shu",
+# so a normal conceptual question that merely contains a common word is NOT
+# rejected. This keeps the RU/UZ additions high-precision.
+_DEIXIS_RE = re.compile(
+    r"\b(?:"
+    # English
+    r"according to the (?:text|passage|document|author)"
+    r"|in this (?:section|chapter|text|passage)"
+    # Russian
+    r"|согласно (?:тексту|документу|отрывку|автору|параграфу)"
+    r"|в (?:этом|данном) (?:тексте|отрывке|разделе|параграфе)"
+    r"|в (?:этой|данной) (?:главе|части)"
+    # Uzbek (Latin)
+    r"|matn(?:ga|da) (?:ko" + _UZ_APOS + r"ra|asosan)"
+    r"|(?:ushbu|mazkur|shu) (?:bo" + _UZ_APOS + r"lim|bob|matn|paragraf)(?:da|ida)"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _has_document_deixis(question: str) -> bool:
+    """True if the question leaks document deixis in EN, RU, or UZ."""
+    return _DEIXIS_RE.search(question) is not None
+
+
+def find_near_duplicates(
+    cards: List[Flashcard], threshold: float = JACCARD_THRESHOLD
+) -> List[tuple]:
+    """Report-only: pairs of cards whose questions exceed the dedup threshold.
+
+    Uses the same ``question_similarity`` as ``dedup_cards`` so the Library's
+    "near-duplicates" view matches what extraction would actually collapse. It
+    only *reports* (index_a, index_b, score) pairs; it never merges, because
+    merging two cards would have to discard one card's SM-2 schedule.
+    """
+    pairs: List[tuple] = []
+    for i in range(len(cards)):
+        for j in range(i + 1, len(cards)):
+            score = question_similarity(cards[i].question, cards[j].question)
+            if score >= threshold:
+                pairs.append((i, j, score))
+    return pairs
 
 
 def dedup_cards(cards: List[Flashcard], threshold: float = JACCARD_THRESHOLD) -> List[Flashcard]:

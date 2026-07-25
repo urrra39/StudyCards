@@ -40,6 +40,9 @@ from src.app.theme import (  # noqa: E402
     monogram_html,
     rule_html,
 )
+from src.app.extract_flow import should_extract  # noqa: E402
+from src.extraction.filtering import find_near_duplicates  # noqa: E402
+from src.data.export import cards_to_json, cards_to_tsv  # noqa: E402
 from src.data.repository import CardRepository, StoredCard  # noqa: E402
 from src.extraction.key_check import check_balance  # noqa: E402
 from src.extraction.model_discovery import (  # noqa: E402
@@ -349,21 +352,41 @@ def _render_upload(cfg: dict) -> None:
     n_chunks = _estimate_chunk_count(text)
     st.caption(f"Estimated {n_chunks} chunk(s) — about {n_chunks} model call(s) on your key.")
 
-    if n_chunks > CHUNK_SOFT_LIMIT:
+    confirmed = bool(st.session_state.get("extract_confirmed"))
+    if n_chunks > CHUNK_SOFT_LIMIT and not confirmed:
         st.warning(
             f"This document is large: roughly {n_chunks} model calls "
             f"(soft limit {CHUNK_SOFT_LIMIT}). Each call bills your API key."
         )
-        confirmed = st.checkbox(
-            f"Yes, run about {n_chunks} paid model calls",
-            value=st.session_state.get("extract_confirmed", False),
-            key="extract_confirm_cb",
-        )
-        if confirmed:
+        col_confirm, col_cancel = st.columns(2)
+        # An explicit primary action beats a latching checkbox: the label names
+        # the cost, and one click both records consent and proceeds in this
+        # same rerun (no second interaction required).
+        if col_confirm.button(
+            f"Confirm & extract (~{n_chunks} calls)",
+            type="primary",
+            key="extract_confirm_btn",
+        ):
             st.session_state["extract_confirmed"] = True
-        if not st.session_state.get("extract_confirmed"):
-            return  # waiting for the user to tick the checkbox
-    # (no confirmation needed for small docs)
+            confirmed = True
+        # Cancel must fully reset the handshake so the user is never stuck with
+        # a latched confirmation (the old checkbox failure mode).
+        if col_cancel.button("Cancel", key="extract_cancel_btn"):
+            st.session_state.pop("pending_extract", None)
+            st.session_state.pop("extract_confirmed", None)
+            st.caption("Extraction cancelled — nothing was sent to your API key.")
+            return
+
+    # Single source of truth for the go/no-go decision (unit-tested via
+    # should_extract() without a Streamlit runtime). Small docs proceed once
+    # armed; large docs need confirmation.
+    if not should_extract(
+        pending=st.session_state.get("pending_extract") == fingerprint,
+        confirmed=confirmed,
+        n_chunks=n_chunks,
+        soft_limit=CHUNK_SOFT_LIMIT,
+    ):
+        return
 
     # ------------------------------------------------------------------ #
     # Step 5 — extraction.  Clears the handshake keys when done.         #
@@ -506,6 +529,60 @@ def _render_deck() -> None:
         if not cards:
             st.caption("Deck is empty.")
             return
+
+        # Export: JSON (full fidelity) + Anki-ish TSV. Built from stored cards
+        # only, which never contain API keys, so the downloads cannot leak
+        # secrets.
+        col_json, col_tsv = st.columns(2)
+        col_json.download_button(
+            "Export JSON",
+            data=cards_to_json(cards),
+            file_name="studycards_export.json",
+            mime="application/json",
+            key="export_json",
+        )
+        col_tsv.download_button(
+            "Export TSV (Anki)",
+            data=cards_to_tsv(cards),
+            file_name="studycards_export.tsv",
+            mime="text/tab-separated-values",
+            key="export_tsv",
+        )
+
+        # Read-only near-duplicate report: lists card pairs whose questions
+        # exceed the same Jaccard threshold extraction uses. Report-only on
+        # purpose — auto-merging would have to discard one card's SM-2 state.
+        dupes = find_near_duplicates(cards)
+        with st.expander(f"Near-duplicates in deck ({len(dupes)})", expanded=False):
+            if not dupes:
+                st.caption("No near-duplicate questions detected.")
+            else:
+                for i, j, score in dupes:
+                    st.caption(
+                        f"~{score:.0%} — “{cards[i].question}” ↔ “{cards[j].question}”"
+                    )
+
+        # Substring search over question + concept (case-insensitive) so a big
+        # deck stays navigable.
+        query = (
+            st.text_input(
+                "Search deck",
+                key="deck_search",
+                placeholder="Filter by question or concept",
+            )
+            .strip()
+            .lower()
+        )
+        if query:
+            cards = [
+                c
+                for c in cards
+                if query in c.question.lower() or query in c.concept.lower()
+            ]
+            if not cards:
+                st.caption("No cards match your search.")
+                return
+
         # One query for every card's latest review instead of N+1.
         latest: Dict[int, object] = repo.latest_reviews()
         for card in cards:
@@ -517,14 +594,28 @@ def _render_deck() -> None:
                 f"&nbsp;&middot;&nbsp; ease {card.ease_factor:.2f}",
                 unsafe_allow_html=True,
             )
-            st.caption(card.question)
             last = latest.get(card.id)
             if last is not None:
                 st.caption(f"Last: {last.explanation}")
-            # delete_card() existed but had no UI; a wrong card was impossible
-            # to remove. Cascade drops its history too.
+
+            # Per-card edit. update_card() only rewrites content fields, never
+            # ease/reps/interval/due, so fixing a typo keeps the schedule.
+            with st.form(key=f"edit_{card.id}"):
+                new_q = st.text_area("Question", value=card.question, key=f"q_{card.id}")
+                new_a = st.text_area("Answer", value=card.answer, key=f"a_{card.id}")
+                new_c = st.text_input("Concept", value=card.concept, key=f"c_{card.id}")
+                if st.form_submit_button("Save changes"):
+                    repo.update_card(
+                        card.id,
+                        question=new_q,
+                        answer=new_a,
+                        concept=new_c,
+                    )
+                    st.rerun()
+
+            # delete_card() cascade-drops this card's history too.
             if st.button("Delete card", key=f"del_{card.id}"):
-                _repo().delete_card(card.id)
+                repo.delete_card(card.id)
                 st.session_state.pop("active_card_id", None)
                 st.rerun()
             st.divider()

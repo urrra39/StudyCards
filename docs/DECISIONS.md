@@ -686,3 +686,117 @@ Collision probability is negligible; any two files with identical bytes are
 the same document regardless of what they are called.
 
 Suite at 216 passing, 2 Streamlit-only skips offline.
+
+---
+
+## Phase 18 - Perfection pass (migrations, multilingual dedup, confirm UX, edit/export, history eval)
+
+This phase closes the last portfolio gaps after Atelier4. Every item below
+ships real code + tests, not just notes.
+
+**Content-only fingerprint (reference).** Already introduced in Phase 17: the
+ingest fingerprint is `sha256(file_bytes)` over content only, so the same file
+renamed is recognised as already-imported. Repeated here because the migration
+and dedup work below build on the same "identity by content" principle.
+
+**[A] Schema migration system.** `CREATE TABLE IF NOT EXISTS` silently does
+nothing on an existing DB, so a database created before a new table/column was
+added would never gain it. Added `SCHEMA_VERSION` in `schema.py` and a tiny
+stdlib migrator in `src/data/migrate.py`:
+- `schema_meta(version INTEGER NOT NULL)` stores the highest applied version.
+- `MIGRATIONS` maps target version -> upgrade function, applied in order.
+- Every migration is idempotent (`IF NOT EXISTS`) and each version bump commits
+  with its migration, so an interrupted run never marks itself complete.
+- `CardRepository.initialize()` runs `SCHEMA_SQL` (fast path for fresh DBs) then
+  `migrate()`. A fresh DB is detected as v1 (cards exist, no `schema_meta`) and
+  stamped to v2; a legacy v1 DB gains the `ingested_documents` table it was
+  missing. This is the concrete, tested migration example (v1 -> v2).
+Why hand-rolled rather than Alembic: the schema is tiny and the project must
+stay zero-config and stdlib-only.
+
+**[B] Multilingual / language-agnostic dedup.** English-only stopwords + an
+ASCII `[a-z0-9']+` tokenizer weakened near-duplicate detection for Uzbek and
+Russian. The tokenizer is now Unicode-aware (`[^\W_]+` with internal
+apostrophes) over NFKD-normalized, combining-mark-stripped, casefolded text, so
+content words in any script compare on equal footing. Stopword removal is now a
+*refinement* layered on top - we keep a small high-confidence en+ru+uz function
+word set, but similarity no longer *depends* on it: an unlisted language still
+dedups, just slightly less aggressively. Threshold stays 0.6 (unchanged;
+English tests unaffected). Tests cover RU and UZ near-duplicates (dedup) vs
+distinct concepts (kept). Deixis quality checks were intentionally NOT expanded
+to RU/UZ to avoid low-precision false positives.
+
+**[C] Confirm-button soft-limit UX.** The checkbox confirm was easy to
+misread, and Cancel was awkward once `extract_confirmed` latched. For
+`n_chunks > CHUNK_SOFT_LIMIT` the UI now shows a primary
+**"Confirm & extract (~N calls)"** button (cost in the label) plus a **Cancel**
+that clears both `pending_extract` and `extract_confirmed`. The
+`pending_extract` handshake is retained. The go/no-go rule is extracted into a
+pure, Streamlit-free helper `src/app/extract_flow.py::should_extract(pending,
+confirmed, n_chunks, soft_limit)` so it is unit-tested headless and the old
+`if not st.button(): return` trap cannot silently return.
+
+**[D] Card edit + Library UX.** `CardRepository.update_card(card_id, *,
+question=None, answer=None, concept=None)` updates only provided content fields
+and bumps `updated_at`; it deliberately never touches ease/reps/interval/due,
+so fixing a typo cannot reset the learner's SM-2 schedule (pinned by a test).
+The Library now has a substring search box, a per-card edit form with Save, the
+existing Delete, and export buttons.
+
+**[E] Export.** `src/data/export.py` produces full-fidelity JSON (cards +
+optional reviews) and Anki-friendly TSV (`question<TAB>answer[<TAB>concept]`).
+Built from `StoredCard`/`StoredReview` only, which never contain API keys, so
+downloads cannot leak secrets. `ensure_ascii=False` keeps Cyrillic/Uzbek
+readable; TSV cells collapse internal whitespace so one card == one line.
+
+**[F] Evaluation realism.** `src/evaluation/from_history.py` reads a real
+SQLite review log and reports descriptive metrics (review count, mean quality,
+mean interval_after, fail rate for q<3) plus a replay consistency check that
+re-derives each SM-2 transition and counts mismatches (0 for data written by
+the real recorder). `run_eval.py --db PATH` runs this; no args keeps the exact
+synthetic comparison. This is explicitly NOT a human memory study: synthetic
+tests the *scheduler* under a modelled curve; the history report describes
+*this user's* actual logged reviews.
+
+Suite at 245 passing, 2 Streamlit-only skips offline.
+
+---
+
+## Phase 19 - Final 100 micro-pass
+
+Three targeted closes to move a harsh external review from 97 -> 100. No
+refactors; minimal diffs.
+
+**[1] README honesty + history-eval parity.** The Highlights and Evaluation
+snapshot led with the synthetic "74.8% fewer reviews" number without equal
+weight to the real-log evaluator. Added an explicit caveat directly under the
+snapshot table (synthetic `R(t)=exp(-t/S)` measures scheduler behavior under a
+model, NOT human retention) and a parallel "History evaluation" subsection
+documenting `python -m src.evaluation.run_eval --db data/studycards.db` and
+exactly what it reports (review count, mean quality, fail rate for q<3, mean
+interval_after, SM-2 replay mismatches). Highlights now names both modes. No
+new or invented metrics.
+
+**[2] RU/UZ high-precision deixis.** English deixis rejection existed; RU/UZ
+were deferred to avoid false positives. Added a small, whole-phrase,
+casefold-insensitive pattern set for Russian ("согласно тексту/документу…",
+"в этом/данном разделе/тексте…", "в этой/данной главе/части") and Uzbek Latin
+("matnga ko'ra/asosan", "ushbu/mazkur/shu bo'limda/bobda/matnida…", tolerant of
+apostrophe variants). Patterns are WHOLE PHRASES anchored on word boundaries,
+never bare words like "текст"/"бу"/"shu", so normal conceptual questions that merely
+contain those words are still accepted (pinned by tests). Jaccard dedup
+untouched.
+
+**[3] Boot-test hardening.** `test_streamlit_headless_boot` once failed with a
+spurious `socket.timeout` on a slow environment. Raised the readiness deadline
+45s -> 90s (still polls and returns as soon as the server answers 200), kept
+the skip-when-not-installed guard, and kept the early-exit branch that dumps
+process output on real failure. Verified (unchanged, still correct): re-upload
+and error paths pop `pending_extract`/`extract_confirmed`, Cancel clears the
+handshake, `should_extract` gates paid calls, and every `unsafe_allow_html`
+sink for concept/question/answer is escaped.
+
+Tiny polish: a read-only "Near-duplicates in deck" Library expander using the
+existing `find_near_duplicates`/`question_similarity` (report-only; no
+auto-merge, since merging would discard one card's SM-2 state).
+

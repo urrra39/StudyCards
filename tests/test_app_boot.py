@@ -75,7 +75,11 @@ def test_streamlit_headless_boot() -> None:
     )
     url = f"http://127.0.0.1:{port}"
     try:
-        deadline = time.time() + 45
+        # 90s (up from 45s): first boot compiles the app + imports numpy/pypdf
+        # and can genuinely exceed 45s on a cold or slow CI machine, which
+        # surfaced as a spurious socket.timeout. This only bounds the failure
+        # case; a healthy server returns as soon as it answers 200.
+        deadline = time.time() + 90
         last_err: object = None
         while time.time() < deadline:
             if proc.poll() is not None:

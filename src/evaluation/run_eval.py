@@ -1,9 +1,22 @@
-"""CLI entrypoint: run the evaluation and write numeric results to docs/."""
+"""CLI entrypoint: run the evaluation and write numeric results to docs/.
+
+Two modes:
+* default (no args)  - the synthetic scheduler comparison (unchanged).
+* ``--db PATH``      - a descriptive report over a real SQLite review log.
+
+The two answer different questions and must not be conflated: synthetic tests
+the *scheduler* under a modelled forgetting curve, while the history report
+describes *this user's* actually-logged reviews. See docs/EVALUATION_RESULTS.md.
+"""
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from pathlib import Path
+from typing import List, Optional
 
+from src.evaluation.from_history import render_report, report_from_db
 from src.evaluation.simulate import compare_schedulers
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -92,7 +105,7 @@ python -m src.evaluation.run_eval
 """
 
 
-def main() -> None:
+def _run_synthetic() -> None:
     params = dict(DEFAULTS)
     results = compare_schedulers(**params)
     OUT_MD.parent.mkdir(parents=True, exist_ok=True)
@@ -115,5 +128,26 @@ def main() -> None:
     print(f"Wrote {OUT_MD}")
 
 
+def main(argv: Optional[List[str]] = None) -> None:
+    """Entry point. ``argv=None`` (default / test calls) runs the synthetic
+    comparison, preserving the historical no-arg behavior. ``--db PATH`` runs a
+    descriptive report over a real review log instead."""
+    parser = argparse.ArgumentParser(description="StudyCards evaluation")
+    parser.add_argument(
+        "--db",
+        metavar="PATH",
+        help="Report descriptive metrics over a real SQLite review log "
+        "instead of running the synthetic simulation.",
+    )
+    args = parser.parse_args(argv if argv is not None else [])
+
+    if args.db:
+        report = report_from_db(args.db)
+        print(render_report(report))
+        return
+
+    _run_synthetic()
+
+
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

@@ -359,3 +359,31 @@ class TestPendingExtractHandshake:
         short = chunk_text("Short text.")
         long_ = chunk_text("paragraph\n\n" * 200)
         assert len(long_) >= len(short)
+
+
+class TestShouldExtract:
+    """Pins the paid-call gate so the old button+checkbox trap cannot return.
+    Imported from a Streamlit-free module so it runs headless."""
+
+    def test_not_armed_never_extracts(self):
+        from src.app.extract_flow import should_extract
+
+        assert should_extract(pending=False, confirmed=False, n_chunks=1, soft_limit=40) is False
+        assert should_extract(pending=False, confirmed=True, n_chunks=1, soft_limit=40) is False
+
+    def test_small_doc_extracts_once_armed(self):
+        from src.app.extract_flow import should_extract
+
+        assert should_extract(pending=True, confirmed=False, n_chunks=10, soft_limit=40) is True
+
+    def test_large_doc_requires_confirmation(self):
+        from src.app.extract_flow import should_extract
+
+        assert should_extract(pending=True, confirmed=False, n_chunks=100, soft_limit=40) is False
+        assert should_extract(pending=True, confirmed=True, n_chunks=100, soft_limit=40) is True
+
+    def test_boundary_at_soft_limit_is_small(self):
+        from src.app.extract_flow import should_extract
+
+        # Exactly at the limit counts as small (no extra confirm needed).
+        assert should_extract(pending=True, confirmed=False, n_chunks=40, soft_limit=40) is True

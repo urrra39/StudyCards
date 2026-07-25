@@ -9,6 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Union
 
+from src.data.migrate import migrate
 from src.data.schema import SCHEMA_SQL
 from src.extraction.schema import Flashcard
 from src.scheduler.sm2 import CardState, review
@@ -133,7 +134,13 @@ class CardRepository:
             conn.close()
 
     def initialize(self) -> None:
-        """Create tables/indexes if they do not already exist."""
+        """Create the schema for fresh DBs and migrate existing ones.
+
+        SCHEMA_SQL fast-paths a brand-new database to the latest shape; the
+        migrator then either stamps that fresh DB at SCHEMA_VERSION or, for a
+        pre-existing database from an older version, applies the ordered
+        migrations needed to bring it up to date. Both paths are idempotent.
+        """
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
             # WAL is a persistent database property; setting it once is enough,
@@ -144,6 +151,8 @@ class CardRepository:
                     conn.execute("PRAGMA journal_mode = WAL")
                 except sqlite3.DatabaseError:  # pragma: no cover - platform dependent
                     logger.debug("WAL unavailable for %s; using default journal", self.db_path)
+            # Apply any pending migrations and record the schema version.
+            migrate(conn)
 
     def add_card(
         self,
@@ -363,6 +372,43 @@ class CardRepository:
         a stale id."""
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+            return cur.rowcount > 0
+
+    def update_card(
+        self,
+        card_id: int,
+        *,
+        question: Optional[str] = None,
+        answer: Optional[str] = None,
+        concept: Optional[str] = None,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Edit a card's CONTENT fields only. Returns True if a row changed.
+
+        Deliberately touches only question/answer/concept (+ updated_at) and
+        never ease_factor/repetitions/interval_days/due_date: fixing a typo in
+        a card must not reset the learner's hard-won SM-2 schedule. Passing no
+        fields is a no-op that returns False rather than issuing an empty
+        UPDATE. Column names come from a fixed allow-list, never user input, so
+        building the SET clause by join is injection-safe.
+        """
+        fields = {
+            "question": question,
+            "answer": answer,
+            "concept": concept,
+        }
+        updates = {k: v for k, v in fields.items() if v is not None}
+        if not updates:
+            return False
+
+        stamp = (now or datetime.now()).isoformat(timespec="seconds")
+        set_clause = ", ".join(f"{column} = ?" for column in updates)
+        params = list(updates.values()) + [stamp, card_id]
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE cards SET {set_clause}, updated_at = ? WHERE id = ?",
+                params,
+            )
             return cur.rowcount > 0
 
     # -- Cross-session ingestion dedup ------------------------------------

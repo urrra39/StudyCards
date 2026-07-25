@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from src.extraction.filtering import (
+    find_near_duplicates,
     JACCARD_THRESHOLD,
     dedup_cards,
     filter_cards,
@@ -109,3 +110,81 @@ class TestDedupAndFilter:
         assert len(result) == 1
         assert result[0].question.startswith("What does the ease factor")
         assert result[0] is not junk
+
+
+class TestMultilingualDedup:
+    """Language-agnostic tokenization must dedup near-duplicates in Russian
+    and Uzbek, not only English, and must NOT merge distinct concepts."""
+
+    def test_russian_near_duplicates_dedup(self):
+        a = "Что такое фотосинтез в биологии?"
+        b = "Что такое фотосинтез?"
+        assert question_similarity(a, b) >= JACCARD_THRESHOLD
+        assert len(dedup_cards([card(a), card(b)])) == 1
+
+    def test_russian_distinct_not_merged(self):
+        a = "Что такое фотосинтез?"
+        b = "Что такое митоз?"
+        assert question_similarity(a, b) < JACCARD_THRESHOLD
+        assert len(dedup_cards([card(a), card(b)])) == 2
+
+    def test_uzbek_near_duplicates_dedup(self):
+        a = "Fotosintez qanday jarayon?"
+        b = "Fotosintez qanday jarayon boradi?"
+        assert question_similarity(a, b) >= JACCARD_THRESHOLD
+        assert len(dedup_cards([card(a), card(b)])) == 1
+
+    def test_uzbek_distinct_not_merged(self):
+        a = "Fotosintez qanday jarayon?"
+        b = "Mitoz qanday jarayon?"
+        assert question_similarity(a, b) < JACCARD_THRESHOLD
+        assert len(dedup_cards([card(a), card(b)])) == 2
+
+    def test_case_and_diacritics_normalized(self):
+        # Casefold + combining-mark stripping make these compare as equal.
+        assert question_similarity("CAF\u00c9 latte concept here", "cafe latte concept here") == 1.0
+
+
+class TestMultilingualDeixis:
+    """High-precision document-deixis rejection in EN/RU/UZ. Normal conceptual
+    questions that merely contain common words must still be accepted."""
+
+    def test_english_deixis_still_rejected(self):
+        assert not passes_quality(card("According to the text, what is mitosis?"))
+        assert not passes_quality(card("In this section, what is defined first?"))
+
+    def test_russian_deixis_rejected(self):
+        assert not passes_quality(card("Согласно тексту, что такое фотосинтез?"))
+        assert not passes_quality(card("В этом разделе что описано подробно?"))
+
+    def test_uzbek_deixis_rejected(self):
+        assert not passes_quality(card("Matnga ko'ra fotosintez qanday jarayon?"))
+        assert not passes_quality(card("Ushbu bo'limda nima haqida gap boradi?"))
+
+    def test_normal_russian_question_accepted(self):
+        assert passes_quality(card("Что такое фотосинтез в биологии?"))
+
+    def test_normal_uzbek_question_accepted(self):
+        # Contains "shu" but not as document deixis -> must NOT be rejected.
+        assert passes_quality(card("Shu jarayon nima uchun muhim hisoblanadi?"))
+        assert passes_quality(card("Fotosintez qanday jarayon boradi o'zi?"))
+
+
+class TestFindNearDuplicates:
+    def test_reports_pairs_above_threshold(self):
+        cards = [
+            card("What does the ease factor control in the SM-2 algorithm?"),
+            card("What does the ease factor control in SM-2?"),
+            card("How does photosynthesis produce glucose in plants?"),
+        ]
+        pairs = find_near_duplicates(cards)
+        assert (0, 1) in [(i, j) for i, j, _ in pairs]
+        # The unrelated card must not pair with anything.
+        assert all(2 not in (i, j) for i, j, _ in pairs)
+
+    def test_no_pairs_when_all_distinct(self):
+        cards = [
+            card("What is mitosis in cell biology?"),
+            card("How does photosynthesis produce glucose?"),
+        ]
+        assert find_near_duplicates(cards) == []

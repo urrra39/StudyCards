@@ -3,7 +3,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-0A1F1C?logo=python&logoColor=D4AF37)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-C5A059)](LICENSE)
 [![SM-2](https://img.shields.io/badge/scheduler-SM--2%20exact-D4AF37)](src/scheduler/sm2.py)
-[![Tests](https://img.shields.io/badge/tests-216%20passing-162825)](tests/)
+[![Tests](https://img.shields.io/badge/tests-245%20passing-162825)](tests/)
 
 **Document → concept-level flashcards → SM-2 spaced repetition**, with a
 measured evaluation against a fixed-interval baseline and an old-money
@@ -29,9 +29,12 @@ an explanation of *why* the next interval was chosen.
   emerald, brass hairline rules, a gilded double-framed review card and a
   monogram masthead; full local serif fallbacks, restyled focus rings,
   `prefers-reduced-motion` support and print styles
-- **Evaluation** — synthetic forgetting curves; SM-2 uses **74.8% fewer
-  reviews** than a 3-day fixed baseline while holding higher mean
-  retrievability ([full numbers](docs/EVALUATION_RESULTS.md))
+- **Evaluation (two honest modes)** — a *synthetic* compare (SM-2 uses
+  **74.8% fewer reviews** than a 3-day fixed baseline under a modelled
+  forgetting curve — scheduler behavior, **not** human retention) **and** a
+  real-log **`--db` history report** over your own reviews (count, mean
+  quality, fail rate, mean interval, SM-2 replay mismatches)
+  ([full numbers](docs/EVALUATION_RESULTS.md))
 - **Explainability** — every review stores a human-readable rationale
   (e.g. *ease factor 2.30 × last interval 6d → ceil = 14 days*)
 
@@ -107,8 +110,27 @@ Results are written to [`docs/EVALUATION_RESULTS.md`](docs/EVALUATION_RESULTS.md
 | Mean daily retrievability | **0.88** | 0.48 |
 | Fraction of card-days with R ≥ 0.85 | **0.69** | 0.38 |
 
-SM-2 wins on review count *and* sustained recall under the synthetic
-forgetting model. Details and methodology: [docs/EVALUATION_RESULTS.md](docs/EVALUATION_RESULTS.md).
+> **What this is and isn't.** These numbers come from a *synthetic*
+> simulation: retrievability `R(t) = exp(-t / S)` under a modelled forgetting
+> curve. It measures **scheduler behavior under a model — not human
+> retention**, and is not a memory study on real learners.
+
+### History evaluation (your real reviews)
+
+The scheduler sim answers "does SM-2 space reviews efficiently under a model?"
+To describe *your own* logged study instead, run the history report:
+
+```bash
+python -m src.evaluation.run_eval --db data/studycards.db
+```
+
+It reads `review_history` from the SQLite DB and reports **review count, mean
+quality, fail rate (quality < 3), mean `interval_after`, and SM-2 replay
+mismatches** (stored transitions that disagree with recomputed SM-2 — expected
+to be 0). This is descriptive statistics over real logged behavior; like the
+synthetic mode, it is **not** a controlled human memory experiment.
+
+Details and methodology: [docs/EVALUATION_RESULTS.md](docs/EVALUATION_RESULTS.md).
 
 ## SM-2 formulas (implemented exactly)
 
